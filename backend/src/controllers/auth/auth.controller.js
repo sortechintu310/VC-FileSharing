@@ -107,3 +107,20 @@ export async function login(req, res, next) {
         next(err)
     }
 }
+
+export async function getMe(req, res, next) {
+    try {
+        const user = req.user;
+
+        return handleResponse(res, 200, "User fetched successfully", {
+            id: user.id,
+            fullName: user.fullName,
+            email: user.email,
+            isActive: user.isActive,
+            lastLoginAt: user.lastLoginAt,
+            createdAt: user.createdAt
+        });
+    } catch (err) {
+        next(err);
+    }
+}
