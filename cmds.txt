@@ -1,1 +1,3 @@
 uvicorn app:app --reload #vc-microservice
+npm run chain
+npm run deploy:local

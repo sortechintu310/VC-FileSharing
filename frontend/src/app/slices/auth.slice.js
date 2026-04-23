@@ -7,7 +7,7 @@ export const loginUser = createAsyncThunk(
         try {
             await authService.login(credentials);
             const response = await authService.getMe();
-            return response.data;
+            return response.data || response;
         } catch (error) {
             return thunkAPI.rejectWithValue(
                 error.response?.data?.message || "Login failed"
@@ -21,7 +21,7 @@ export const signupUser = createAsyncThunk(
     async (payload, thunkAPI) => {
         try {
             const response = await authService.signup(payload);
-            return response.data;
+            return response.data || response;
         } catch (error) {
             return thunkAPI.rejectWithValue(
                 error.response?.data?.message || "Signup failed"
@@ -35,7 +35,7 @@ export const fetchMe = createAsyncThunk(
     async (_, thunkAPI) => {
         try {
             const response = await authService.getMe();
-            return response.data;
+            return response.data || response;
         } catch (error) {
             return thunkAPI.rejectWithValue("Unauthorized");
         }

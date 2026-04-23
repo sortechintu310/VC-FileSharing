@@ -18,7 +18,8 @@ const getInitials = (name) => {
 export default function ProfilePage() {
     const dispatch = useDispatch();
     const navigate = useNavigate();
-    const { user } = useSelector((state) => state.auth);
+    const authUser = useSelector((state) => state.auth.user);
+    const user = authUser?.data ?? authUser;
 
     const handleLogout = async () => {
         await dispatch(logoutUser());
