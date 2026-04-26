@@ -12,6 +12,8 @@ import {
     RefreshCw,
     Copy,
     Download,
+    Eye,
+    X,
 } from "lucide-react";
 import { logoutUser } from "../../app/slices/auth.slice.js";
 import fileService from "../../services/file.service.js";
@@ -73,6 +75,33 @@ const parseShareCids = (rawText) =>
         .map((cid) => cid.trim())
         .filter(Boolean);
 
+const DASHBOARD_TABS = [
+    { id: "overview", label: "Overview" },
+    { id: "operations", label: "File Operations" },
+    { id: "access", label: "Access Control" },
+    { id: "files", label: "My Files" },
+];
+
+const getReconstructedPreviewType = (fileName, mimeType) => {
+    const normalizedName = String(fileName || "").toLowerCase();
+    const extension = normalizedName.includes(".") ? normalizedName.split(".").pop() : "";
+    const normalizedMimeType = String(mimeType || "").toLowerCase();
+
+    if (extension === "pdf" || normalizedMimeType.includes("application/pdf")) return "pdf";
+    if (extension === "jpg" || extension === "jpeg" || normalizedMimeType.includes("image/jpeg")) return "image";
+
+    return null;
+};
+
+const triggerDownload = (objectUrl, fileName) => {
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = fileName || "reconstructed_file.bin";
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+};
+
 export default function DashboardPage() {
     const dispatch = useDispatch();
     const navigate = useNavigate();
@@ -104,6 +133,8 @@ export default function DashboardPage() {
     const [reconstructing, setReconstructing] = useState(false);
     const [reconstructError, setReconstructError] = useState("");
     const [reconstructMessage, setReconstructMessage] = useState("");
+    const [reconstructPreview, setReconstructPreview] = useState(null);
+    const [activeTab, setActiveTab] = useState("overview");
 
     const fetchFiles = useCallback(async () => {
         setFilesLoading(true);
@@ -132,6 +163,14 @@ export default function DashboardPage() {
     useEffect(() => {
         fetchFiles();
     }, [fetchFiles]);
+
+    useEffect(() => {
+        return () => {
+            if (reconstructPreview?.url) {
+                window.URL.revokeObjectURL(reconstructPreview.url);
+            }
+        };
+    }, [reconstructPreview]);
 
     const handleLogout = async () => {
         await dispatch(logoutUser());
@@ -239,15 +278,25 @@ export default function DashboardPage() {
             });
 
             const objectUrl = window.URL.createObjectURL(response.blob);
-            const anchor = document.createElement("a");
-            anchor.href = objectUrl;
-            anchor.download = response.fileName || "reconstructed_file.bin";
-            document.body.appendChild(anchor);
-            anchor.click();
-            document.body.removeChild(anchor);
-            window.URL.revokeObjectURL(objectUrl);
+            const reconstructedFileName =
+                response.fileName ||
+                outputFileName.trim() ||
+                "reconstructed_file.bin";
+            const previewType = getReconstructedPreviewType(reconstructedFileName, response?.blob?.type);
 
-            setReconstructMessage("File reconstructed and downloaded successfully");
+            if (previewType) {
+                setReconstructPreview({
+                    url: objectUrl,
+                    fileName: reconstructedFileName,
+                    type: previewType,
+                });
+                setReconstructMessage("File reconstructed successfully. Preview is ready below.");
+            } else {
+                setReconstructPreview(null);
+                triggerDownload(objectUrl, reconstructedFileName);
+                window.URL.revokeObjectURL(objectUrl);
+                setReconstructMessage("File reconstructed and downloaded. Preview is available only for PDF or JPG files.");
+            }
         } catch (error) {
             const message = await normalizeErrorMessage(error, "File reconstruction failed");
             setReconstructError(message);
@@ -372,227 +421,322 @@ export default function DashboardPage() {
                     </button>
                 </section>
 
-                <section className="dash-grid">
-                    <article className="dash-panel">
-                        <header className="panel-head">
-                            <h2>Upload File</h2>
-                            <span>Split + register on blockchain</span>
-                        </header>
+                <section className="dash-tabs" role="tablist" aria-label="Dashboard sections">
+                    {DASHBOARD_TABS.map((tab) => (
+                        <button
+                            key={tab.id}
+                            type="button"
+                            role="tab"
+                            aria-selected={activeTab === tab.id}
+                            className={`dash-tab-btn ${activeTab === tab.id ? "active" : ""}`}
+                            onClick={() => setActiveTab(tab.id)}
+                        >
+                            {tab.label}
+                        </button>
+                    ))}
+                </section>
 
-                        <form className="panel-form" onSubmit={handleUpload}>
-                            <label className="panel-label">Choose File</label>
-                            <input
-                                className="panel-input"
-                                type="file"
-                                onChange={(event) => setUploadFileInput(event.target.files?.[0] || null)}
-                                required
-                            />
-
-                            <label className="panel-label">Number of Shares (2-10)</label>
-                            <input
-                                className="panel-input"
-                                type="number"
-                                min="2"
-                                max="10"
-                                value={sharesCount}
-                                onChange={(event) => setSharesCount(event.target.value)}
-                            />
-
-                            {uploadError && <p className="panel-error">{uploadError}</p>}
-
-                            <button className="panel-submit" type="submit" disabled={uploading}>
-                                <Upload size={16} />
-                                {uploading ? "Uploading..." : "Upload and Split"}
+                {activeTab === "overview" && (
+                    <section className="dash-overview-grid">
+                        <article className="dash-panel overview-card">
+                            <h3>Upload & Reconstruct</h3>
+                            <p>Split files into secure shares and rebuild when needed.</p>
+                            <button type="button" className="panel-submit" onClick={() => setActiveTab("operations")}>
+                                Open File Operations
                             </button>
-                        </form>
+                        </article>
 
-                        {uploadResult && (
-                            <div className="panel-result">
-                                <h3>Upload Result</h3>
-                                <p><strong>File ID:</strong> {uploadResult.fileId}</p>
-                                <p><strong>AES Key:</strong> {uploadResult?.shares?.aesKey}</p>
-                                <p><strong>Tx Hash:</strong> {uploadResult?.blockchain?.txHash}</p>
+                        <article className="dash-panel overview-card">
+                            <h3>Access Management</h3>
+                            <p>Grant blockchain read access to trusted wallet addresses.</p>
+                            <button type="button" className="panel-submit" onClick={() => setActiveTab("access")}>
+                                Open Access Control
+                            </button>
+                        </article>
 
-                                <div className="result-share-list">
-                                    {(uploadResult?.shares?.cids || []).map((cid, index) => (
-                                        <div key={cid} className="result-share-item">
-                                            <span>Share {index + 1}: {cid}</span>
-                                            <button type="button" onClick={() => handleCopy(cid)}>
-                                                <Copy size={14} />
-                                            </button>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
-                    </article>
+                        <article className="dash-panel overview-card">
+                            <h3>File Library</h3>
+                            <p>Search your uploaded files and track blockchain status quickly.</p>
+                            <button type="button" className="panel-submit" onClick={() => setActiveTab("files")}>
+                                Open My Files
+                            </button>
+                        </article>
+                    </section>
+                )}
 
-                    <article className="dash-panel">
-                        <header className="panel-head">
-                            <h2>Reconstruct File</h2>
-                            <span>Use AES key + shares</span>
-                        </header>
+                {activeTab === "operations" && (
+                    <section className="dash-grid">
+                        <article className="dash-panel">
+                            <header className="panel-head">
+                                <h2>Upload File</h2>
+                                <span>Split + register on blockchain</span>
+                            </header>
 
-                        <form className="panel-form" onSubmit={handleReconstruct}>
-                            <label className="panel-label">AES Key</label>
-                            <input
-                                className="panel-input"
-                                type="text"
-                                value={aesKey}
-                                onChange={(event) => setAesKey(event.target.value)}
-                                placeholder="Paste aes_key from split response"
-                            />
+                            <form className="panel-form" onSubmit={handleUpload}>
+                                <label className="panel-label">Choose File</label>
+                                <input
+                                    className="panel-input"
+                                    type="file"
+                                    onChange={(event) => setUploadFileInput(event.target.files?.[0] || null)}
+                                    required
+                                />
 
-                            <label className="panel-label">Saved File (optional)</label>
-                            <select
-                                className="panel-input"
-                                value={selectedReconstructFileId}
-                                onChange={(event) => setSelectedReconstructFileId(event.target.value)}
-                            >
-                                <option value="">Select saved file</option>
-                                {files.map((file) => (
-                                    <option key={file.fileId} value={file.fileId}>
-                                        {file.fileName} ({file.fileId})
-                                    </option>
-                                ))}
-                            </select>
+                                <label className="panel-label">Number of Shares (2-10)</label>
+                                <input
+                                    className="panel-input"
+                                    type="number"
+                                    min="2"
+                                    max="10"
+                                    value={sharesCount}
+                                    onChange={(event) => setSharesCount(event.target.value)}
+                                />
 
-                            <label className="panel-label">Manual Share CIDs (optional, comma/newline separated)</label>
-                            <textarea
-                                className="panel-input panel-textarea"
-                                value={manualShareCids}
-                                onChange={(event) => setManualShareCids(event.target.value)}
-                                placeholder="QmShareCid1&#10;QmShareCid2&#10;QmShareCid3"
-                            />
+                                {uploadError && <p className="panel-error">{uploadError}</p>}
 
-                            {selectedFileForPreview?.shares?.length > 0 && (
-                                <div className="panel-hint">
-                                    Selected file has {selectedFileForPreview.shares.length} saved shares. If manual list is empty, backend uses those shares.
+                                <button className="panel-submit" type="submit" disabled={uploading}>
+                                    <Upload size={16} />
+                                    {uploading ? "Uploading..." : "Upload and Split"}
+                                </button>
+                            </form>
+
+                            {uploadResult && (
+                                <div className="panel-result">
+                                    <h3>Upload Result</h3>
+                                    <p><strong>File ID:</strong> {uploadResult.fileId}</p>
+                                    <p><strong>AES Key:</strong> {uploadResult?.shares?.aesKey}</p>
+                                    <p><strong>Tx Hash:</strong> {uploadResult?.blockchain?.txHash}</p>
+
+                                    <div className="result-share-list">
+                                        {(uploadResult?.shares?.cids || []).map((cid, index) => (
+                                            <div key={cid} className="result-share-item">
+                                                <span>Share {index + 1}: {cid}</span>
+                                                <button type="button" onClick={() => handleCopy(cid)}>
+                                                    <Copy size={14} />
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
                                 </div>
                             )}
+                        </article>
 
-                            <label className="panel-label">Output Filename</label>
-                            <input
-                                className="panel-input"
-                                type="text"
-                                value={outputFileName}
-                                onChange={(event) => setOutputFileName(event.target.value)}
-                                placeholder="reconstructed_file.bin"
-                            />
+                        <article className="dash-panel">
+                            <header className="panel-head">
+                                <h2>Reconstruct File</h2>
+                                <span>Preview supported for PDF/JPG</span>
+                            </header>
 
-                            {reconstructError && <p className="panel-error">{reconstructError}</p>}
-                            {reconstructMessage && <p className="panel-success">{reconstructMessage}</p>}
-
-                            <button className="panel-submit" type="submit" disabled={reconstructing}>
-                                <Download size={16} />
-                                {reconstructing ? "Reconstructing..." : "Reconstruct and Download"}
-                            </button>
-                        </form>
-                    </article>
-
-                    <article className="dash-panel dash-panel-wide">
-                        <header className="panel-head">
-                            <h2>Grant Blockchain Access</h2>
-                            <span>Grant read access to another wallet</span>
-                        </header>
-
-                        <form className="panel-form panel-form-inline" onSubmit={handleGrantAccess}>
-                            <div className="inline-field">
-                                <label className="panel-label">File</label>
-                                <select
-                                    className="panel-input"
-                                    value={grantFileId}
-                                    onChange={(event) => setGrantFileId(event.target.value)}
-                                >
-                                    <option value="">Select file</option>
-                                    {files
-                                        .filter((file) => file.status === "uploaded")
-                                        .map((file) => (
-                                            <option key={file.fileId} value={file.fileId}>
-                                                {file.fileName} ({file.fileId})
-                                            </option>
-                                        ))}
-                                </select>
-                            </div>
-
-                            <div className="inline-field">
-                                <label className="panel-label">Wallet Address</label>
+                            <form className="panel-form" onSubmit={handleReconstruct}>
+                                <label className="panel-label">AES Key</label>
                                 <input
                                     className="panel-input"
                                     type="text"
-                                    value={walletAddress}
-                                    onChange={(event) => setWalletAddress(event.target.value)}
-                                    placeholder="0x..."
+                                    value={aesKey}
+                                    onChange={(event) => setAesKey(event.target.value)}
+                                    placeholder="Paste aes_key from split response"
                                 />
-                            </div>
 
-                            <button className="panel-submit" type="submit" disabled={granting}>
-                                <Share2 size={16} />
-                                {granting ? "Granting..." : "Grant Access"}
-                            </button>
-                        </form>
+                                <label className="panel-label">Saved File (optional)</label>
+                                <select
+                                    className="panel-input"
+                                    value={selectedReconstructFileId}
+                                    onChange={(event) => setSelectedReconstructFileId(event.target.value)}
+                                >
+                                    <option value="">Select saved file</option>
+                                    {files.map((file) => (
+                                        <option key={file.fileId} value={file.fileId}>
+                                            {file.fileName} ({file.fileId})
+                                        </option>
+                                    ))}
+                                </select>
 
-                        {grantError && <p className="panel-error">{grantError}</p>}
-                        {grantMessage && <p className="panel-success">{grantMessage}</p>}
-                    </article>
-                </section>
+                                <label className="panel-label">Manual Share CIDs (optional, comma/newline separated)</label>
+                                <textarea
+                                    className="panel-input panel-textarea"
+                                    value={manualShareCids}
+                                    onChange={(event) => setManualShareCids(event.target.value)}
+                                    placeholder="QmShareCid1&#10;QmShareCid2&#10;QmShareCid3"
+                                />
 
-                <section className="dash-list-section">
-                    <div className="dash-list-header">
-                        <h2 className="dash-section-title">Your Files</h2>
-                        <div className="dash-search-wrap">
-                            <Search size={16} />
-                            <input
-                                type="text"
-                                placeholder="Search by name, fileId, tx hash"
-                                value={searchTerm}
-                                onChange={(event) => setSearchTerm(event.target.value)}
-                            />
-                        </div>
-                    </div>
-
-                    {filesError && <p className="panel-error">{filesError}</p>}
-
-                    <div className="dash-files-table">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>File Name</th>
-                                    <th>Size</th>
-                                    <th>Created</th>
-                                    <th>File ID</th>
-                                    <th>Tx Hash</th>
-                                    <th>Status</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {filteredFiles.length === 0 && (
-                                    <tr>
-                                        <td colSpan="6" className="dash-empty-cell">
-                                            {filesLoading ? "Loading files..." : "No files found"}
-                                        </td>
-                                    </tr>
+                                {selectedFileForPreview?.shares?.length > 0 && (
+                                    <div className="panel-hint">
+                                        Selected file has {selectedFileForPreview.shares.length} saved shares. If manual list is empty, backend uses those shares.
+                                    </div>
                                 )}
 
-                                {filteredFiles.map((file) => (
-                                    <tr key={file.fileId}>
-                                        <td>{file.fileName}</td>
-                                        <td>{formatBytes(file.size)}</td>
-                                        <td>{formatDate(file.createdAt)}</td>
-                                        <td className="mono-cell">{shortHash(file.fileId)}</td>
-                                        <td className="mono-cell">{shortHash(file.blockchainTxHash)}</td>
-                                        <td>
-                                            <span className={`dash-status ${file.status || "pending"}`}>
-                                                <span className="dash-status-dot" />
-                                                {(file.status || "pending").toUpperCase()}
-                                            </span>
-                                        </td>
+                                <label className="panel-label">Output Filename</label>
+                                <input
+                                    className="panel-input"
+                                    type="text"
+                                    value={outputFileName}
+                                    onChange={(event) => setOutputFileName(event.target.value)}
+                                    placeholder="reconstructed_file.bin"
+                                />
+
+                                {reconstructError && <p className="panel-error">{reconstructError}</p>}
+                                {reconstructMessage && <p className="panel-success">{reconstructMessage}</p>}
+
+                                <button className="panel-submit" type="submit" disabled={reconstructing}>
+                                    <Download size={16} />
+                                    {reconstructing ? "Reconstructing..." : "Reconstruct File"}
+                                </button>
+                            </form>
+
+                            {reconstructPreview && (
+                                <div className="panel-result">
+                                    <div className="preview-head">
+                                        <h3>
+                                            <Eye size={14} />
+                                            Reconstructed Preview
+                                        </h3>
+                                        <div className="preview-actions">
+                                            <button
+                                                type="button"
+                                                className="preview-btn"
+                                                onClick={() => triggerDownload(reconstructPreview.url, reconstructPreview.fileName)}
+                                            >
+                                                <Download size={14} />
+                                                Download
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="preview-btn secondary"
+                                                onClick={() => setReconstructPreview(null)}
+                                            >
+                                                <X size={14} />
+                                                Close
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <p><strong>File:</strong> {reconstructPreview.fileName}</p>
+
+                                    {reconstructPreview.type === "pdf" ? (
+                                        <iframe
+                                            title={`Preview ${reconstructPreview.fileName}`}
+                                            src={reconstructPreview.url}
+                                            className="reconstruct-preview-frame"
+                                        />
+                                    ) : (
+                                        <img
+                                            src={reconstructPreview.url}
+                                            alt={reconstructPreview.fileName}
+                                            className="reconstruct-preview-image"
+                                        />
+                                    )}
+                                </div>
+                            )}
+                        </article>
+                    </section>
+                )}
+
+                {activeTab === "access" && (
+                    <section className="dash-grid">
+                        <article className="dash-panel dash-panel-wide">
+                            <header className="panel-head">
+                                <h2>Grant Blockchain Access</h2>
+                                <span>Grant read access to another wallet</span>
+                            </header>
+
+                            <form className="panel-form panel-form-inline" onSubmit={handleGrantAccess}>
+                                <div className="inline-field">
+                                    <label className="panel-label">File</label>
+                                    <select
+                                        className="panel-input"
+                                        value={grantFileId}
+                                        onChange={(event) => setGrantFileId(event.target.value)}
+                                    >
+                                        <option value="">Select file</option>
+                                        {files
+                                            .filter((file) => file.status === "uploaded")
+                                            .map((file) => (
+                                                <option key={file.fileId} value={file.fileId}>
+                                                    {file.fileName} ({file.fileId})
+                                                </option>
+                                            ))}
+                                    </select>
+                                </div>
+
+                                <div className="inline-field">
+                                    <label className="panel-label">Wallet Address</label>
+                                    <input
+                                        className="panel-input"
+                                        type="text"
+                                        value={walletAddress}
+                                        onChange={(event) => setWalletAddress(event.target.value)}
+                                        placeholder="0x..."
+                                    />
+                                </div>
+
+                                <button className="panel-submit" type="submit" disabled={granting}>
+                                    <Share2 size={16} />
+                                    {granting ? "Granting..." : "Grant Access"}
+                                </button>
+                            </form>
+
+                            {grantError && <p className="panel-error">{grantError}</p>}
+                            {grantMessage && <p className="panel-success">{grantMessage}</p>}
+                        </article>
+                    </section>
+                )}
+
+                {activeTab === "files" && (
+                    <section className="dash-list-section">
+                        <div className="dash-list-header">
+                            <h2 className="dash-section-title">Your Files</h2>
+                            <div className="dash-search-wrap">
+                                <Search size={16} />
+                                <input
+                                    type="text"
+                                    placeholder="Search by name, fileId, tx hash"
+                                    value={searchTerm}
+                                    onChange={(event) => setSearchTerm(event.target.value)}
+                                />
+                            </div>
+                        </div>
+
+                        {filesError && <p className="panel-error">{filesError}</p>}
+
+                        <div className="dash-files-table">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>File Name</th>
+                                        <th>Size</th>
+                                        <th>Created</th>
+                                        <th>File ID</th>
+                                        <th>Tx Hash</th>
+                                        <th>Status</th>
                                     </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-                </section>
+                                </thead>
+                                <tbody>
+                                    {filteredFiles.length === 0 && (
+                                        <tr>
+                                            <td colSpan="6" className="dash-empty-cell">
+                                                {filesLoading ? "Loading files..." : "No files found"}
+                                            </td>
+                                        </tr>
+                                    )}
+
+                                    {filteredFiles.map((file) => (
+                                        <tr key={file.fileId}>
+                                            <td>{file.fileName}</td>
+                                            <td>{formatBytes(file.size)}</td>
+                                            <td>{formatDate(file.createdAt)}</td>
+                                            <td className="mono-cell">{shortHash(file.fileId)}</td>
+                                            <td className="mono-cell">{shortHash(file.blockchainTxHash)}</td>
+                                            <td>
+                                                <span className={`dash-status ${file.status || "pending"}`}>
+                                                    <span className="dash-status-dot" />
+                                                    {(file.status || "pending").toUpperCase()}
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+                )}
             </div>
         </div>
     );
