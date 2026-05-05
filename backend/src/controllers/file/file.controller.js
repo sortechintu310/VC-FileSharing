@@ -14,6 +14,66 @@ const { File, FileShare } = db;
 
 const isValidEthAddress = (value) => /^0x[a-fA-F0-9]{40}$/.test(value);
 
+const GENERIC_RECONSTRUCT_NAMES = new Set(["reconstructed_file", "reconstructed_file.bin"]);
+
+const MIME_BY_EXTENSION = {
+  pdf: "application/pdf",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+  bmp: "image/bmp",
+  svg: "image/svg+xml",
+};
+
+const sanitizeFileName = (value, fallback = "reconstructed_file") => {
+  const baseName = String(value || "")
+    .split(/[\\/]/)
+    .pop()
+    .trim();
+
+  const safeName = baseName
+    .replace(/[\r\n"]/g, "")
+    .replace(/[^a-zA-Z0-9._ -]/g, "_")
+    .trim();
+
+  return safeName || fallback;
+};
+
+const isGenericReconstructName = (value) =>
+  GENERIC_RECONSTRUCT_NAMES.has(String(value || "").trim().toLowerCase());
+
+const getContentDisposition = (fileName) => {
+  const asciiFileName = sanitizeFileName(fileName).replace(/[^\x20-\x7E]/g, "_");
+  return `inline; filename="${asciiFileName}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
+};
+
+const inferMimeType = (fileName, buffer) => {
+  const extension = String(fileName || "").toLowerCase().split(".").pop();
+
+  if (MIME_BY_EXTENSION[extension]) {
+    return MIME_BY_EXTENSION[extension];
+  }
+
+  if (buffer?.subarray) {
+    const header = buffer.subarray(0, 12);
+    if (header.subarray(0, 4).toString() === "%PDF") return "application/pdf";
+    if (header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff) return "image/jpeg";
+    if (header.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+      return "image/png";
+    }
+    if (header.subarray(0, 6).toString() === "GIF87a" || header.subarray(0, 6).toString() === "GIF89a") {
+      return "image/gif";
+    }
+    if (header.subarray(0, 4).toString() === "RIFF" && header.subarray(8, 12).toString() === "WEBP") {
+      return "image/webp";
+    }
+  }
+
+  return "application/octet-stream";
+};
+
 const formatFile = (file, includeShares = false) => {
   const payload = {
     id: file.id,
@@ -276,14 +336,18 @@ export const grantAccess = async (req, res, next) => {
 export const reconstructFile = async (req, res, next) => {
   try {
     const aesKey = String(req.body?.aesKey || "").trim();
-    const outputFileName = String(req.body?.outputFileName || "reconstructed_file").trim();
-    const safeOutputFileName = outputFileName.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const requestedOutputFileName = String(req.body?.outputFileName || "").trim();
     const inputFileId = req.body?.fileId ? String(req.body.fileId).trim() : null;
 
     let shareCids = req.body?.shareCids || [];
+    let selectedFile = null;
 
     if (!aesKey) {
       return handleResponse(res, 400, "aesKey is required");
+    }
+
+    if (!/^[a-fA-F0-9]{64}$/.test(aesKey)) {
+      return handleResponse(res, 400, "aesKey must be a 64-character hex AES-256 key");
     }
 
     if (!Array.isArray(shareCids)) {
@@ -294,8 +358,8 @@ export const reconstructFile = async (req, res, next) => {
       .map((cid) => String(cid || "").trim())
       .filter(Boolean);
 
-    if (shareCids.length < 2 && inputFileId) {
-      const file = await File.findOne({
+    if (inputFileId) {
+      selectedFile = await File.findOne({
         where: {
           fileId: inputFileId,
           ownerId: req.user.id,
@@ -310,21 +374,31 @@ export const reconstructFile = async (req, res, next) => {
         ],
       });
 
-      if (!file) {
+      if (!selectedFile) {
         return handleResponse(res, 404, "File not found");
       }
 
-      shareCids = (file.shares || [])
-        .slice()
-        .sort((a, b) => a.shareIndex - b.shareIndex)
-        .map((share) => share.cid);
+      if (shareCids.length < 2) {
+        shareCids = (selectedFile.shares || [])
+          .slice()
+          .sort((a, b) => a.shareIndex - b.shareIndex)
+          .map((share) => share.cid);
+      }
     }
 
     if (shareCids.length < 2) {
       return handleResponse(
         res,
         400,
-        "At least 2 share CIDs are required, or provide a valid fileId owned by you"
+        "Provide at least 2 manual share CIDs, or select a saved file so all saved shares can be used"
+      );
+    }
+
+    if (selectedFile && shareCids.length !== Number(selectedFile.shareCount)) {
+      return handleResponse(
+        res,
+        400,
+        `Selected file requires all ${selectedFile.shareCount} shares for reconstruction; received ${shareCids.length}`
       );
     }
 
@@ -333,8 +407,34 @@ export const reconstructFile = async (req, res, next) => {
       shareCids,
     });
 
-    res.setHeader("Content-Type", "application/octet-stream");
-    res.setHeader("Content-Disposition", `attachment; filename=\"${safeOutputFileName || "reconstructed_file"}\"`);
+    if (selectedFile?.originalFileHash) {
+      const reconstructedHash = crypto.createHash("sha256").update(reconstructedBuffer).digest("hex");
+
+      if (reconstructedHash !== selectedFile.originalFileHash) {
+        return handleResponse(
+          res,
+          422,
+          "Reconstructed bytes do not match the selected file. Check the AES key and share CIDs."
+        );
+      }
+    }
+
+    const responseFileName = sanitizeFileName(
+      (!requestedOutputFileName || isGenericReconstructName(requestedOutputFileName)) && selectedFile?.fileName
+        ? selectedFile.fileName
+        : requestedOutputFileName || selectedFile?.fileName || "reconstructed_file"
+    );
+    const storedMimeType =
+      selectedFile?.mimeType && selectedFile.mimeType !== "application/octet-stream"
+        ? selectedFile.mimeType
+        : "";
+    const mimeType = storedMimeType || inferMimeType(responseFileName, reconstructedBuffer);
+
+    res.setHeader("Content-Type", mimeType);
+    res.setHeader("Content-Length", String(reconstructedBuffer.length));
+    res.setHeader("Content-Disposition", getContentDisposition(responseFileName));
+    res.setHeader("X-File-Name", encodeURIComponent(responseFileName));
+    res.setHeader("X-Mime-Type", mimeType);
 
     return res.status(200).send(reconstructedBuffer);
   } catch (err) {

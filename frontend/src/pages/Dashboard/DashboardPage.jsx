@@ -88,7 +88,12 @@ const getReconstructedPreviewType = (fileName, mimeType) => {
     const normalizedMimeType = String(mimeType || "").toLowerCase();
 
     if (extension === "pdf" || normalizedMimeType.includes("application/pdf")) return "pdf";
-    if (extension === "jpg" || extension === "jpeg" || normalizedMimeType.includes("image/jpeg")) return "image";
+    if (
+        normalizedMimeType.startsWith("image/") ||
+        ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "avif"].includes(extension)
+    ) {
+        return "image";
+    }
 
     return null;
 };
@@ -129,7 +134,7 @@ export default function DashboardPage() {
     const [aesKey, setAesKey] = useState("");
     const [selectedReconstructFileId, setSelectedReconstructFileId] = useState("");
     const [manualShareCids, setManualShareCids] = useState("");
-    const [outputFileName, setOutputFileName] = useState("reconstructed_file.bin");
+    const [outputFileName, setOutputFileName] = useState("");
     const [reconstructing, setReconstructing] = useState(false);
     const [reconstructError, setReconstructError] = useState("");
     const [reconstructMessage, setReconstructMessage] = useState("");
@@ -146,6 +151,7 @@ export default function DashboardPage() {
 
             if (!selectedReconstructFileId && nextFiles.length > 0) {
                 setSelectedReconstructFileId(nextFiles[0].fileId);
+                setOutputFileName((currentValue) => currentValue || nextFiles[0].fileName || "");
             }
 
             if (!grantFileId) {
@@ -210,7 +216,8 @@ export default function DashboardPage() {
 
             setUploadResult(response);
             setAesKey(response?.shares?.aesKey || "");
-            setOutputFileName(uploadFileInput.name || "reconstructed_file.bin");
+            setSelectedReconstructFileId(response?.fileId || "");
+            setOutputFileName(uploadFileInput.name || "");
             await fetchFiles();
         } catch (error) {
             const message = await normalizeErrorMessage(error, "File upload failed");
@@ -254,9 +261,14 @@ export default function DashboardPage() {
         event.preventDefault();
         setReconstructError("");
         setReconstructMessage("");
+        setReconstructPreview(null);
 
         const key = aesKey.trim();
         const shareCids = parseShareCids(manualShareCids);
+        const requestedOutputFileName =
+            outputFileName.trim() ||
+            selectedFileForPreview?.fileName ||
+            "reconstructed_file";
 
         if (!key) {
             setReconstructError("AES key is required");
@@ -273,16 +285,18 @@ export default function DashboardPage() {
             const response = await fileService.reconstructFile({
                 aesKey: key,
                 shareCids,
-                outputFileName: outputFileName.trim() || "reconstructed_file.bin",
-                fileId: shareCids.length >= 2 ? null : selectedReconstructFileId,
+                outputFileName: requestedOutputFileName,
+                fileId: selectedReconstructFileId || null,
             });
 
             const objectUrl = window.URL.createObjectURL(response.blob);
             const reconstructedFileName =
                 response.fileName ||
-                outputFileName.trim() ||
-                "reconstructed_file.bin";
-            const previewType = getReconstructedPreviewType(reconstructedFileName, response?.blob?.type);
+                requestedOutputFileName;
+            const previewType = getReconstructedPreviewType(
+                reconstructedFileName,
+                response?.mimeType || response?.blob?.type
+            );
 
             if (previewType) {
                 setReconstructPreview({
@@ -295,7 +309,7 @@ export default function DashboardPage() {
                 setReconstructPreview(null);
                 triggerDownload(objectUrl, reconstructedFileName);
                 window.URL.revokeObjectURL(objectUrl);
-                setReconstructMessage("File reconstructed and downloaded. Preview is available only for PDF or JPG files.");
+                setReconstructMessage("File reconstructed and downloaded. Preview is available only for PDF and image files.");
             }
         } catch (error) {
             const message = await normalizeErrorMessage(error, "File reconstruction failed");
@@ -332,6 +346,15 @@ export default function DashboardPage() {
         () => files.find((file) => file.fileId === selectedReconstructFileId) || null,
         [files, selectedReconstructFileId]
     );
+
+    const handleReconstructFileSelection = (fileId) => {
+        setSelectedReconstructFileId(fileId);
+        setManualShareCids("");
+        setReconstructPreview(null);
+
+        const selectedFile = files.find((file) => file.fileId === fileId);
+        setOutputFileName(selectedFile?.fileName || "");
+    };
 
     return (
         <div className="dashboard">
@@ -413,7 +436,11 @@ export default function DashboardPage() {
                     </button>
                     <button
                         className="dash-action-btn secondary"
-                        onClick={() => setManualShareCids((uploadResult?.shares?.cids || []).join("\n"))}
+                        onClick={() => {
+                            setSelectedReconstructFileId(uploadResult?.fileId || selectedReconstructFileId);
+                            setOutputFileName(uploadResult?.fileName || outputFileName);
+                            setManualShareCids((uploadResult?.shares?.cids || []).join("\n"));
+                        }}
                         disabled={!uploadResult?.shares?.cids?.length}
                     >
                         <Share2 size={18} strokeWidth={2} />
@@ -523,7 +550,7 @@ export default function DashboardPage() {
                         <article className="dash-panel">
                             <header className="panel-head">
                                 <h2>Reconstruct File</h2>
-                                <span>Preview supported for PDF/JPG</span>
+                                <span>Preview supported for PDF/images</span>
                             </header>
 
                             <form className="panel-form" onSubmit={handleReconstruct}>
@@ -540,7 +567,7 @@ export default function DashboardPage() {
                                 <select
                                     className="panel-input"
                                     value={selectedReconstructFileId}
-                                    onChange={(event) => setSelectedReconstructFileId(event.target.value)}
+                                    onChange={(event) => handleReconstructFileSelection(event.target.value)}
                                 >
                                     <option value="">Select saved file</option>
                                     {files.map((file) => (
@@ -550,7 +577,7 @@ export default function DashboardPage() {
                                     ))}
                                 </select>
 
-                                <label className="panel-label">Manual Share CIDs (optional, comma/newline separated)</label>
+                                <label className="panel-label">Manual Share CIDs (optional, paste all shares, comma/newline separated)</label>
                                 <textarea
                                     className="panel-input panel-textarea"
                                     value={manualShareCids}
@@ -560,7 +587,7 @@ export default function DashboardPage() {
 
                                 {selectedFileForPreview?.shares?.length > 0 && (
                                     <div className="panel-hint">
-                                        Selected file has {selectedFileForPreview.shares.length} saved shares. If manual list is empty, backend uses those shares.
+                                        Selected file has {selectedFileForPreview.shares.length} saved shares. If manual list is empty, backend uses all saved shares.
                                     </div>
                                 )}
 
@@ -570,7 +597,7 @@ export default function DashboardPage() {
                                     type="text"
                                     value={outputFileName}
                                     onChange={(event) => setOutputFileName(event.target.value)}
-                                    placeholder="reconstructed_file.bin"
+                                    placeholder="Leave blank to use selected file name"
                                 />
 
                                 {reconstructError && <p className="panel-error">{reconstructError}</p>}

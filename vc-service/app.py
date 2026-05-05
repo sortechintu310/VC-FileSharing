@@ -1,9 +1,11 @@
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
+from fastapi.exceptions import HTTPException
 from utils.crypto_service import generate_key, encrypt, decrypt
 from ipfs_service import upload_bytes, get_bytes
 import zipfile
 import io
+import traceback
 
 from vc_logic import (
     xor_image_split,
@@ -13,6 +15,13 @@ from vc_logic import (
 )
 
 app = FastAPI(title="VC Microservice")
+
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request, exc):
+    import logging
+    logging.error(f"Unhandled exception: {exc}", exc_info=True)
+    return {"error": str(exc), "detail": traceback.format_exc()}
 
 
 @app.get("/")
@@ -98,29 +107,35 @@ async def reconstruct_image(
 @app.post("/split/file")
 async def split_file(
     file: UploadFile = File(...),
-    n: int = Form(...)
+    n: str = Form(...)
 ):
+    try:
+        data = await file.read()
+        
+        shares_count = int(n)
 
-    data = await file.read()
+        shares = xor_file_split(data, shares_count)
 
-    shares = xor_file_split(data, n)
+        key = generate_key()
 
-    key = generate_key()
+        cids = []
 
-    cids = []
+        for share in shares:
 
-    for share in shares:
+            encrypted = encrypt(share, key)
 
-        encrypted = encrypt(share, key)
+            cid = upload_bytes(encrypted)
 
-        cid = upload_bytes(encrypted)
+            cids.append(cid)
 
-        cids.append(cid)
-
-    return {
-        "share_cids": cids,
-        "aes_key": key.hex()
-    }
+        return {
+            "share_cids": cids,
+            "aes_key": key.hex()
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid parameter: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
 
 # ------------------------------------
@@ -132,25 +147,29 @@ async def reconstruct_file(
     aes_key: str = Form(...),
     cids: str = Form(...)
 ):
+    try:
+        key = bytes.fromhex(aes_key)
 
-    key = bytes.fromhex(aes_key)
+        cid_list = [cid.strip() for cid in cids.split(",") if cid.strip()]
 
-    cid_list = cids.split(",")
+        shares = []
 
-    shares = []
+        for cid in cid_list:
 
-    for cid in cid_list:
+            encrypted = get_bytes(cid)
 
-        encrypted = get_bytes(cid)
+            decrypted = decrypt(encrypted, key)
 
-        decrypted = decrypt(encrypted, key)
+            shares.append(decrypted)
 
-        shares.append(decrypted)
+        reconstructed = xor_file_reconstruct(shares)
 
-    reconstructed = xor_file_reconstruct(shares)
-
-    return StreamingResponse(
-        io.BytesIO(reconstructed),
-        media_type="application/octet-stream",
-        headers={"Content-Disposition": "attachment; filename=reconstructed_file"}
-    )
+        return StreamingResponse(
+            io.BytesIO(reconstructed),
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": "attachment; filename=reconstructed_file"}
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid parameter: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
